@@ -9,7 +9,6 @@ langchain-mcp-adapters
 langgraph
 langchain-chroma
 sentence-transformers
-guardrails-ai
 langsmith
 python-dotenv
 pydantic
