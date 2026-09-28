@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+langchain-groq
+langchain-huggingface
+langchain-text-splitters
+langgraph
+langchain-chroma
+sentence-transformers
+guardrails-ai
+langsmith
+python-dotenv
+pydantic
+requests
+streamlit
+requests
