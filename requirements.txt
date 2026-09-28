@@ -5,6 +5,7 @@ langchain-community
 langchain-groq
 langchain-huggingface
 langchain-text-splitters
+langchain-mcp-adapters
 langgraph
 langchain-chroma
 sentence-transformers
@@ -15,3 +16,12 @@ pydantic
 requests
 streamlit
 requests
+
+
+# Run Commands
+
+# Terminal 1
+# uvicorn app.main:app --reload
+
+# Terminal 2
+# streamlit run ui/streamlit_app.py

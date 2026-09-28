@@ -1,7 +1,7 @@
 from app.graph.state import ChangeRiskState
 from app.rag.retriever import retrieve_context
 from app.guardrails.validators import validate_report
-from app.mcp.github_tool import create_github_issue
+from app.mcp.github_client import create_issue_via_mcp
 
 from langgraph.types import interrupt
 
@@ -45,8 +45,10 @@ def hitl_node(state: ChangeRiskState) -> ChangeRiskState:
     state["approved"] = decision
 
     if decision:
-        create_github_issue(title=f"Change request: {state['change_request'][:60]}", body=state["risk_report"])
-        log_step(state, "MCP GitHub Tool", "Issue created after approval")
+        create_issue_via_mcp(
+            title=f"Change request: {state['change_request'][:60]}",
+            body=state["risk_report"],
+        )
+        log_step(state, "MCP Client", "Called GitHub MCP tool issue_write - GitHub issue created")
     else:
-        log_step(state, "MCP GitHub Tool", "Skipped — developer rejected")
-    return state
+        log_step(state, "MCP GitHub Tool", "Skipped - developer rejected")

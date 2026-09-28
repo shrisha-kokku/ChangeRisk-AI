@@ -1,71 +1,113 @@
-import streamlit as st
-import requests
+import json
+import os
+from pathlib import Path
 
-API_URL = "http://localhost:8000"
+import requests
+import streamlit as st
+
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+ROBOT_ICON = Path(__file__).parent / "static" / "robot.svg"
 
 st.set_page_config(page_title="ChangeRisk AI", layout="centered")
 
+# button colors: green for Approve, red for Reject
 st.markdown("""
 <style>
-.trace-step {
-    padding: 10px 14px;
-    border-left: 3px solid #4f8cff;
-    margin-bottom: 8px;
-    background-color: #161a23;
-    border-radius: 4px;
-}
-.trace-step-name { font-weight: 600; color: #4f8cff; }
-.trace-step-detail { color: #b0b8c4; font-size: 0.9em; }
+.st-key-approve button {background-color: #238636; border-color: #238636; width: 100%;}
+.st-key-reject button {background-color: #da3633; border-color: #da3633; width: 100%;}
+.st-key-approve button *, .st-key-reject button * {color: #ffffff !important;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("ChangeRisk AI")
+# values that must survive button clicks
+if "trace" not in st.session_state:
+    st.session_state.update(thread_id=None, risk_report=None, trace=[], resolved=False, outcome=None)
+
+
+def show_trace(steps):
+    """One bordered card per agent step."""
+    for step in steps:
+        with st.container(border=True):
+            st.markdown(f"**{step['step']}**")
+            st.caption(step["detail"])
+
+
+def run_analysis(change_request):
+    """Reads the live stream from the backend and shows each agent as it works."""
+    st.session_state.update(risk_report=None, trace=[], resolved=False, outcome=None)
+    with st.status("Running: Extractor", expanded=True) as status:
+        url = f"{API_URL}/analyze-change/stream"
+        with requests.post(url, json={"change_request": change_request}, stream=True, timeout=300) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                event = json.loads(line)
+                if event["type"] == "start":
+                    st.session_state.thread_id = event["thread_id"]
+                elif event["type"] == "step":
+                    show_trace(event["entries"])
+                    status.update(label=f"Running: {event['next']}")   # the agent working right now
+                elif event["type"] == "done":
+                    st.session_state.risk_report = event["risk_report"]
+                    st.session_state.trace = event["execution_log"]
+                    status.update(label="Analysis complete", state="complete")
+    st.rerun()   # redraw the page from saved state
+
+
+def send_decision(approved):
+    """Sends the human's approve/reject to the backend."""
+    response = requests.post(
+        f"{API_URL}/approve",
+        json={"thread_id": st.session_state.thread_id, "approved": approved},
+        timeout=120,
+    )
+    response.raise_for_status()
+    st.session_state.trace.append(response.json()["execution_log"][-1])
+    st.session_state.resolved = True
+    st.session_state.outcome = "approved" if approved else "rejected"
+    st.rerun()
+
+
+# ---------- page ----------
+icon_col, title_col = st.columns([1, 8], vertical_alignment="center")
+icon_col.image(str(ROBOT_ICON), width=64)
+title_col.title("ChangeRisk AI")
 st.caption("Multi-agent system for software change impact and risk analysis")
 
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = None
-    st.session_state.risk_report = None
-    st.session_state.execution_log = []
-    st.session_state.resolved = False
-
 change_request = st.text_area(
-    "Describe the change you want to make", height=100,
-    placeholder="e.g. I want to add UPI refund functionality to my payment system"
+    "Describe the change you want to make", height=110,
+    placeholder="e.g. I want to add UPI refund functionality to my payment system",
 )
 
 if st.button("Analyze Change", type="primary"):
-    with st.spinner("Running analysis..."):
-        response = requests.post(f"{API_URL}/analyze-change", json={"change_request": change_request})
-        data = response.json()
-        st.session_state.thread_id = data["thread_id"]
-        st.session_state.risk_report = data["risk_report"]
-        st.session_state.execution_log = data["execution_log"]
-        st.session_state.resolved = False
+    if change_request.strip():
+        try:
+            run_analysis(change_request)
+        except requests.exceptions.RequestException:
+            st.error("Cannot reach the backend. Make sure the FastAPI server is running.")
+    else:
+        st.warning("Please describe the change first.")
+
+if st.session_state.trace:
+    st.subheader("Agent Activity")
+    show_trace(st.session_state.trace)
 
 if st.session_state.risk_report:
     st.subheader("Risk Report")
-    st.write(st.session_state.risk_report)
+    with st.container(border=True):
+        st.markdown(st.session_state.risk_report)
 
-    st.subheader("Agent Execution Trace")
-    for step in st.session_state.execution_log:
-        st.markdown(
-            f'<div class="trace-step"><div class="trace-step-name">{step["step"]}</div>'
-            f'<div class="trace-step-detail">{step["detail"]}</div></div>',
-            unsafe_allow_html=True
-        )
-
-    if not st.session_state.resolved:
+    if st.session_state.resolved:
+        if st.session_state.outcome == "approved":
+            st.success("Approved. GitHub issue filed.")
+        else:
+            st.info("Rejected. No action was taken.")
+    else:
         st.subheader("Approval Required")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Approve — File GitHub Issue"):
-                r = requests.post(f"{API_URL}/approve", json={"thread_id": st.session_state.thread_id, "approved": True})
-                st.session_state.execution_log = r.json()["execution_log"]
-                st.session_state.resolved = True
-                st.success("Approved. GitHub issue filed.")
-        with col2:
-            if st.button("Reject"):
-                r = requests.post(f"{API_URL}/approve", json={"thread_id": st.session_state.thread_id, "approved": False})
-                st.session_state.execution_log = r.json()["execution_log"]
-                st.session_state.resolved = True
-                st.info("Rejected. No action taken.")
+        st.caption("Nothing is filed on GitHub until you approve.")
+        approve_col, reject_col, _ = st.columns([1, 1, 4])
+        if approve_col.button("Approve", key="approve"):
+            send_decision(True)
+        if reject_col.button("Reject", key="reject"):
+            send_decision(False)
