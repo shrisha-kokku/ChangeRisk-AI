@@ -4,6 +4,10 @@ from app.llm.groq_client import get_llm
 
 def supervisor_node(state: ChangeRiskState) -> ChangeRiskState:
     """Judge: looks at what's known so far and decides which specialist runs next."""
+    if state.get("security_findings") and state.get("test_impact_findings") and state.get("code_findings"):
+        state["next_agent"] = "report"     # all specialists are done, no need to ask the LLM
+        log_step(state, "Supervisor (Judge)", "Decided next specialist: report")
+        return state
     llm = get_llm()
     prompt = f"""You are a supervisor deciding which specialist to consult next.
 Specialists: security, test_impact, code_search.

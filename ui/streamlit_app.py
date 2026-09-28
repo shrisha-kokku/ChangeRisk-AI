@@ -20,21 +20,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # values that must survive button clicks
-if "trace" not in st.session_state:
-    st.session_state.update(thread_id=None, risk_report=None, trace=[], resolved=False, outcome=None)
+DEFAULTS = {"trace": [], "risk_report": None, "chat": [], "chat_thread_id": None, "pending": None}
+for key, default in DEFAULTS.items():
+    st.session_state.setdefault(key, default)
 
 
 def show_trace(steps):
-    """One bordered card per agent step."""
+    """One bordered card per analysis step."""
     for step in steps:
         with st.container(border=True):
             st.markdown(f"**{step['step']}**")
             st.caption(step["detail"])
 
 
+def show_item(item):
+    """Shows one chat entry: a user message, an agent message, or a tool call/result card."""
+    if item["kind"] == "user":
+        st.chat_message("user").write(item["text"])
+    elif item["kind"] == "agent":
+        st.chat_message("assistant").write(item["text"])
+    else:
+        with st.container(border=True):
+            st.markdown(f"**{item['title']}**")
+            st.caption(item["text"])
+
+
+def to_item(event):
+    """Converts a backend event into a chat entry."""
+    if event["type"] == "message":
+        return {"kind": "agent", "text": event["text"]}
+    if event["type"] == "tool_call":
+        return {"kind": "tool", "title": f"Tool call: {event['name']}", "text": json.dumps(event["args"], ensure_ascii=False)}
+    if event["type"] == "tool_result":
+        return {"kind": "tool", "title": f"Tool result: {event['name']}", "text": event["output"]}
+    return None
+
+
 def run_analysis(change_request):
-    """Reads the live stream from the backend and shows each agent as it works."""
-    st.session_state.update(risk_report=None, trace=[], resolved=False, outcome=None)
+    """Reads the live analysis stream and shows each agent as it works."""
+    st.session_state.update(risk_report=None, trace=[], chat=[], chat_thread_id=None, pending=None)
     with st.status("Running: Extractor", expanded=True) as status:
         url = f"{API_URL}/analyze-change/stream"
         with requests.post(url, json={"change_request": change_request}, stream=True, timeout=300) as response:
@@ -43,30 +67,69 @@ def run_analysis(change_request):
                 if not line:
                     continue
                 event = json.loads(line)
-                if event["type"] == "start":
-                    st.session_state.thread_id = event["thread_id"]
-                elif event["type"] == "step":
+                if event["type"] == "step":
                     show_trace(event["entries"])
-                    status.update(label=f"Running: {event['next']}")   # the agent working right now
+                    if event["next"]:
+                        status.update(label=f"Running: {event['next']}")
                 elif event["type"] == "done":
                     st.session_state.risk_report = event["risk_report"]
                     st.session_state.trace = event["execution_log"]
                     status.update(label="Analysis complete", state="complete")
-    st.rerun()   # redraw the page from saved state
-
-
-def send_decision(approved):
-    """Sends the human's approve/reject to the backend."""
-    response = requests.post(
-        f"{API_URL}/approve",
-        json={"thread_id": st.session_state.thread_id, "approved": approved},
-        timeout=120,
-    )
-    response.raise_for_status()
-    st.session_state.trace.append(response.json()["execution_log"][-1])
-    st.session_state.resolved = True
-    st.session_state.outcome = "approved" if approved else "rejected"
     st.rerun()
+
+
+def run_agent_stream(path, payload):
+    """Reads the action agent's live stream: every tool call, result, and message."""
+    with st.status("Agent is working...", expanded=True) as status:
+        with requests.post(f"{API_URL}{path}", json=payload, stream=True, timeout=300) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                event = json.loads(line)
+                if event["type"] == "start":
+                    st.session_state.chat_thread_id = event["thread_id"]
+                elif event["type"] == "approval":
+                    st.session_state.pending = {"tool": event["tool"], "args": event["args"]}
+                else:
+                    item = to_item(event)
+                    if item:
+                        st.session_state.chat.append(item)
+                        show_item(item)
+        status.update(label="Agent finished", state="complete")
+    st.rerun()
+
+
+def send_decision(approved, args):
+    """Sends the human's decision (with any edits) back to the paused agent."""
+    st.session_state.pending = None
+    run_agent_stream("/decision", {
+        "thread_id": st.session_state.chat_thread_id, "approved": approved, "args": args,
+    })
+
+
+def show_approval():
+    """Editable form for the write action the agent wants to run."""
+    pending = st.session_state.pending
+    args = pending["args"]
+    st.subheader("Approval Required")
+    st.caption(f"The agent wants to run: {pending['tool']}. Edit anything below, then approve.")
+
+    edited = {}
+    if pending["tool"] == "create_issue":
+        edited["title"] = st.text_input("Title", args.get("title", ""))
+        edited["body"] = st.text_area("Body", args.get("body", ""), height=260)
+        labels = st.text_input("Labels (comma separated)", ", ".join(args.get("labels") or []))
+        edited["labels"] = [label.strip() for label in labels.split(",") if label.strip()]
+    else:  # add_comment
+        edited["issue_number"] = int(st.number_input("Issue number", min_value=1, value=int(args.get("issue_number", 1)), step=1))
+        edited["body"] = st.text_area("Comment", args.get("body", ""), height=260)
+
+    approve_col, reject_col, _ = st.columns([1, 1, 4])
+    if approve_col.button("Approve", key="approve"):
+        send_decision(True, edited)
+    if reject_col.button("Reject", key="reject"):
+        send_decision(False, args)
 
 
 # ---------- page ----------
@@ -98,16 +161,21 @@ if st.session_state.risk_report:
     with st.container(border=True):
         st.markdown(st.session_state.risk_report)
 
-    if st.session_state.resolved:
-        if st.session_state.outcome == "approved":
-            st.success("Approved. GitHub issue filed.")
-        else:
-            st.info("Rejected. No action was taken.")
+    st.subheader("Action Agent")
+    st.caption("Tell the agent what to do with this report. Anything it wants to create or post is shown for your approval first.")
+    for chat_item in st.session_state.chat:
+        show_item(chat_item)
+
+    if st.session_state.pending:
+        show_approval()
     else:
-        st.subheader("Approval Required")
-        st.caption("Nothing is filed on GitHub until you approve.")
-        approve_col, reject_col, _ = st.columns([1, 1, 4])
-        if approve_col.button("Approve", key="approve"):
-            send_decision(True)
-        if reject_col.button("Reject", key="reject"):
-            send_decision(False)
+        prompt = st.chat_input("e.g. File this as an issue")
+        if prompt:
+            user_item = {"kind": "user", "text": prompt}
+            st.session_state.chat.append(user_item)
+            show_item(user_item)
+            run_agent_stream("/chat", {
+                "message": prompt,
+                "report": st.session_state.risk_report,
+                "thread_id": st.session_state.chat_thread_id,
+            })

@@ -7,7 +7,7 @@ def code_search_agent(state: ChangeRiskState) -> ChangeRiskState:
     llm = get_llm()
     context = "\n".join(state["retrieved_context"])
     prompt = f"""You are a senior engineer. Given this change request and context,
-list which files/APIs likely need modification. Be concise.
+list which files/APIs likely need modification. Only name files that appear in the context. Mark files that don't exist yet as NEW. `Be concise.
 
 Change: {state['change_request']}
 Context: {context}"""

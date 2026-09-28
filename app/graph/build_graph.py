@@ -2,7 +2,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.graph.state import ChangeRiskState
-from app.graph.nodes import extractor_node, rag_node, report_node, hitl_node
+from app.graph.nodes import extractor_node, rag_node, report_node
 from app.agents.supervisor import supervisor_node
 from app.agents.security_agent import security_agent
 from app.agents.test_impact_agent import test_impact_agent
@@ -25,7 +25,6 @@ def build_graph():
     graph.add_node("test_impact", test_impact_agent)
     graph.add_node("code_search", code_search_agent)
     graph.add_node("report", report_node)
-    graph.add_node("hitl", hitl_node)
 
     graph.set_entry_point("extractor")
     graph.add_edge("extractor", "rag")
@@ -40,8 +39,7 @@ def build_graph():
     graph.add_edge("test_impact", "supervisor")
     graph.add_edge("code_search", "supervisor")
 
-    graph.add_edge("report", "hitl")
-    graph.add_edge("hitl", END)
+    graph.add_edge("report", END)
 
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
