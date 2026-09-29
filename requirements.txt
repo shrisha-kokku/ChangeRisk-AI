@@ -24,3 +24,21 @@ requests
 
 # Terminal 2
 # streamlit run ui/streamlit_app.py
+
+
+
+
+
+# Few Test Data
+
+# I want to add UPI refund functionality to my payment system
+
+# Increase the session timeout from 30 minutes to 2 hours for logged-in users
+
+# Add a "delete my account" feature that removes all user data
+
+# Update the API documentation for the payment endpoints
+
+# Add a "Buy Now Pay Later" payment option
+
+# Rename a few internal variables in the checkout code for readability

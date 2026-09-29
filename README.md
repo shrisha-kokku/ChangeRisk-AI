@@ -1,26 +1,28 @@
 # ChangeRisk AI
 
-Multi-agent LangGraph system that analyzes proposed code changes against a codebase, its tests, and security policies, then lets a tool-calling agent act on the result in GitHub. Every write action pauses for human approval, and the reviewer can edit it first.
+Multi-agent LangGraph system that analyzes proposed code changes against a codebase, its tests, and security policies, then lets a tool-calling agent act on the result in GitHub. Every write action pauses for human approval, and the reviewer can edit it before it runs.
 
 ## Overview
 
-A developer describes a change, for example: *"I want to add UPI refund functionality to my payment system."*
+A developer describes a change, for example: *"Increase the session timeout from 30 minutes to 2 hours for logged-in users."*
 
 ChangeRisk AI works in two phases:
 
-1. **Analysis.** Relevant context is retrieved from the indexed codebase, tests, and security policies. An LLM judge-supervisor routes the request to specialist agents, and the findings are combined into a risk report covering security concerns, required tests, and the files and APIs likely to change.
-2. **Action.** The developer chats with an action agent, for example *"File this as an issue."* The agent decides which GitHub tools to call. It searches for existing issues first, then creates a new issue or comments on an existing one. Any write action pauses for approval, with editable content, before it runs.
+1. **Analysis.** Relevant context is retrieved from the indexed codebase, tests, and security policies. An LLM judge-supervisor routes the request to specialist agents. Each specialist explicitly compares the proposed change against any relevant rule or limit in the retrieved context, so a change that violates a stated policy is reported as a violation, not as compliant. The findings are combined into a risk report, then checked by a two-step guardrail before being shown.
+2. **Action.** The developer chats with an action agent, for example *"File this as an issue."* The agent decides which GitHub tools to call. It always searches for an existing issue about the same change first, and comments on it instead of creating a duplicate. Any write action pauses for approval, with editable content, before it runs.
 
 ## Features
 
-- **Judge-supervisor routing.** An LLM decides which specialist agent runs next, based on what is already known about the change. A loop guard forces the final report once all specialists have run.
-- **Specialist agents.** Security review, test impact analysis, and affected files/APIs.
-- **Retrieval-augmented analysis.** Codebase, tests, and policies are indexed in ChromaDB using local embeddings.
-- **Guardrail.** The final report is checked against the retrieved evidence before it is shown.
-- **Tool-calling action agent.** The LLM chooses between `search_issues`, `create_issue`, and `add_comment`, and checks for duplicates before creating an issue.
-- **Human-in-the-loop.** Write tools pause with LangGraph `interrupt()`. The reviewer can edit the arguments (title, body, labels, comment text) before approving, and only the approved version runs.
-- **MCP integration.** The backend is an MCP client for GitHub's official hosted MCP server.
-- **Live execution trace.** Every agent step, tool call, and tool result is streamed to the UI as it happens.
+- **Judge-supervisor routing.** An LLM decides which specialist agent runs next, based on what is already known about the change. Once all three specialists have run, the supervisor moves straight to the report without an extra LLM call. A separate loop guard in the graph also forces the report if the judge ever repeats itself, so a bad decision can never cause an endless loop.
+- **Specialist agents.** Security review, test impact analysis, and affected files/APIs. Each agent is instructed to explicitly compare the proposed change against any rule or limit stated in the retrieved context, rather than describing a policy-violating change as compliant.
+- **Retrieval-augmented analysis.** Codebase, tests, and policy documents are indexed in ChromaDB using local, free embeddings.
+- **Two-step guardrail.**
+  1. A grounding check rejects a report that is empty or shares no real content with the retrieved context.
+  2. A policy-compliance pass re-checks the finished report against the actual policy documents and silently corrects any point that contradicts them, so the model's general knowledge can add detail but can never override what the real policies say.
+- **Tool-calling action agent.** The LLM chooses between `search_issues`, `create_issue`, and `add_comment`. It treats an existing issue as a duplicate if it concerns the same change request, even if the conclusion differs, and comments on it instead of creating a new one.
+- **Human-in-the-loop.** Write tools pause with LangGraph `interrupt()`. The reviewer can edit the arguments (title, body, labels, comment text) before approving, and only the approved version runs. Read tools run automatically.
+- **MCP integration.** The backend is an MCP client for GitHub's official hosted MCP server, not a custom-built wrapper around the GitHub API.
+- **Live execution trace.** Every agent step, tool call, and tool result is streamed to the UI as it happens, showing which agent is currently running.
 - **Observability.** Every run is traced in LangSmith.
 
 ## Architecture
@@ -38,11 +40,11 @@ flowchart TD
     E --> D
     F --> D
     G --> D
-    D -->|report| H[Guardrail + Report Builder]
+    D -->|report| H[Guardrail: grounding + policy check]
     H --> I[Risk report]
 ```
 
-The supervisor runs after every specialist and decides the next step. A safety check forces the report once all three specialists have run, so a bad LLM decision can never cause an endless loop.
+The supervisor runs after every specialist and decides the next step. Once all three specialists have finished, it skips the LLM call and routes straight to the report. A loop guard in the graph provides a second safety net regardless of what the judge decides.
 
 ### Action phase
 
@@ -66,14 +68,16 @@ Read tools run automatically. Write tools call GitHub's MCP server only after ap
 | ----------------- | --------------------------------------------------------------------- |
 | Orchestration     | LangGraph, LangChain                                                  |
 | LLM               | Groq via`langchain-groq` (`openai/gpt-oss-120b`)                  |
-| Retrieval         | ChromaDB,`sentence-transformers` (local embeddings)                 |
+| Retrieval         | ChromaDB,`sentence-transformers` (local embeddings, no API key)     |
 | Human-in-the-loop | LangGraph`interrupt()` with a checkpointer                          |
-| Guardrail         | Grounding check on the final report                                   |
+| Guardrail         | Grounding check plus an LLM-based policy-compliance pass              |
 | Tool integration  | MCP client (`langchain-mcp-adapters`) to GitHub's remote MCP server |
 | Observability     | LangSmith                                                             |
 | Backend           | FastAPI                                                               |
 | UI                | Streamlit                                                             |
 | Packaging         | Docker                                                                |
+
+All services used have a free tier.
 
 ## Project structure
 
@@ -103,15 +107,19 @@ ChangeRisk AI/
 │   │   └── retriever.py
 │   ├── mcp/
 │   │   └── github_client.py     # MCP client for GitHub's MCP server
-│   ├── guardrails/validators.py
+│   ├── guardrails/validators.py # grounding check + policy-compliance pass
 │   ├── llm/groq_client.py
 │   ├── models/schemas.py        # request models
 │   └── services/
 │       ├── change_service.py    # streams the analysis
 │       └── action_service.py    # runs the action agent
-├── data/                        # source documents to index (sample payment system)
+├── data/                        # source documents to index (mock NeoPay payments platform)
+│   ├── codebase_sample/
+│   ├── security_policies/
+│   └── docs/
 ├── chroma_db/                   # persisted vector index (generated)
-├── scripts/run_ingest.py        # index builder
+├── scripts/
+│   └── run_ingest.py            # index builder
 ├── ui/
 │   ├── streamlit_app.py
 │   └── static/robot.svg
@@ -130,8 +138,6 @@ ChangeRisk AI/
 - A LangSmith API key (smith.langchain.com)
 - A GitHub personal access token with the `repo` scope
 - A GitHub repository to receive the issues
-
-All services above offer a free tier.
 
 ### Installation
 
@@ -169,7 +175,7 @@ GITHUB_REPO=your-username/your-issues-repo
 
 ### Build the index
 
-Place the codebase files, tests, and security policies to analyze in `data/`, then run:
+Place the codebase files, tests, and policy documents to analyze in `data/`, then run:
 
 ```bash
 python scripts/run_ingest.py
@@ -210,7 +216,7 @@ All streaming endpoints return newline-delimited JSON events.
 Example analysis request:
 
 ```json
-{"change_request": "I want to add UPI refund functionality to my payment system"}
+{"change_request": "Increase the session timeout from 30 minutes to 2 hours for logged-in users"}
 ```
 
 Example decision request:
@@ -218,6 +224,18 @@ Example decision request:
 ```json
 {"thread_id": "<thread_id from the start event>", "approved": true, "args": {"title": "...", "body": "...", "labels": ["security"]}}
 ```
+
+## Testing
+
+There is no automated test suite. The project was verified manually with the following scenarios, run through the UI against the live LLM and GitHub:
+
+| Scenario                                                      | What it verifies                                                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| "Add UPI refund functionality to my payment system"           | RAG grounding, full specialist routing, analysis-to-report flow                                  |
+| "Increase the session timeout from 30 minutes to 2 hours"     | The security agent correctly identifies a policy violation instead of describing it as compliant |
+| "File this as an issue" after an analysis with no prior issue | `search_issues` finds nothing, `create_issue` runs after editable approval                   |
+| "File this as an issue" after a matching issue already exists | `search_issues` finds the existing issue, `add_comment` runs instead of creating a duplicate |
+| Rejecting a proposed action in the approval form              | No GitHub action is taken when the reviewer clicks Reject                                        |
 
 ## Deployment
 
@@ -228,15 +246,16 @@ docker build -t changerisk-ai .
 docker run -p 8000:8000 --env-file .env changerisk-ai
 ```
 
-The image contains the backend only. Provide the environment variables through the hosting platform rather than baking them into the image.
+The image contains the backend only. Provide the environment variables through the hosting platform rather than baking them into the image. The backend loads `sentence-transformers`, which needs roughly 1 GB of memory; choose a host with enough headroom for this.
 
 ### UI
 
-The Streamlit UI can be hosted separately. Set the `API_URL` environment variable (or Streamlit secret) to the deployed backend URL.
+The Streamlit UI can be hosted separately, for example on Streamlit Community Cloud. Set the `API_URL` environment variable (or Streamlit secret) to the deployed backend URL.
 
 ## Limitations
 
 - Both graphs use an in-memory checkpointer, so a paused approval or an ongoing chat is lost if the backend restarts. For production, use a persistent checkpointer such as Postgres.
-- The sample data in `data/` is a small mock payment system that demonstrates retrieval.
-- The grounding check is a lightweight heuristic and does not replace human review.
-- GitHub's search index can lag briefly, so an issue created moments ago may not appear in the duplicate check.
+- The sample data in `data/` is a small mock payments platform used to demonstrate retrieval, not a real codebase.
+- The policy-compliance guardrail corrects contradictions it finds, but it is an LLM-based check, not a formal verification, and is not a substitute for human review.
+- GitHub's issue search is keyword-based, not semantic, and can occasionally miss a duplicate if the agent's query is worded very differently from the existing issue.
+- There is no automated test suite; correctness was verified through the manual scenarios listed above.

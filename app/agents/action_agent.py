@@ -10,8 +10,12 @@ WRITE_NAMES = {t.name for t in WRITE_TOOLS}
 
 SYSTEM_PROMPT = """You help a developer act on a risk report.
 You have tools to search, create, and comment on GitHub issues.
-Always search for existing issues before creating one. If a similar issue exists, comment on it instead.
-Write issue titles and bodies from the risk report below.
+
+Always search for existing issues before creating one.
+Treat an existing issue as a duplicate if it is about the same underlying change request,
+even if its conclusion or details differ. In that case, comment on the existing issue
+with the new findings instead of creating a new issue. Only create a new issue if
+search finds nothing related to this change request at all.
 Call only one tool at a time.
 
 Risk report:

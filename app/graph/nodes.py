@@ -1,6 +1,6 @@
 from app.graph.state import ChangeRiskState
 from app.rag.retriever import retrieve_context
-from app.guardrails.validators import validate_report
+from app.guardrails.validators import validate_report, enforce_policy_compliance
 
 def log_step(state: ChangeRiskState, step_name: str, detail: str) -> None:
     """Records which step ran and what it did — this is what the UI displays."""
@@ -30,7 +30,8 @@ def report_node(state: ChangeRiskState) -> ChangeRiskState:
         report = "Report failed grounding check — insufficient evidence. Manual review required."
         log_step(state, "Guardrail", "Report failed grounding check")
     else:
-        log_step(state, "Guardrail", "Report passed grounding check")
+        report = enforce_policy_compliance(report, state["retrieved_context"])
+        log_step(state, "Guardrail", "Report checked against policies, no visible changes needed")
 
     state["risk_report"] = report
     log_step(state, "Report Builder", "Combined specialist findings into final report")

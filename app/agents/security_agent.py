@@ -9,6 +9,11 @@ def security_agent(state: ChangeRiskState) -> ChangeRiskState:
     prompt = f"""You are a security reviewer. Given this change request and context,
 list concrete security risks only. Be concise.
 
+If the context states a specific rule, limit, or number, and the proposed change
+relates to it, compare the change against that rule explicitly before concluding
+anything. Never describe a change as compliant if it exceeds, weakens, or removes
+a limit stated in the context.
+
 Change: {state['change_request']}
 Context: {context}"""
     response = llm.invoke(prompt)
